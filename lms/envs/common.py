@@ -3251,6 +3251,7 @@ INSTALLED_APPS = [
 
     # API Documentation
     'drf_yasg',
+    'drf_spectacular',
 
     # edx-drf-extensions
     'csrf.apps.CsrfAppConfig',  # Enables frontend apps to retrieve CSRF tokens.
@@ -3338,6 +3339,16 @@ REST_FRAMEWORK = {
         'registration_validation': '30/minute',
         'high_service_user': '2000/minute',
     },
+    'DEFAULT_SCHEMA_CLASS': 'drf_spectacular.openapi.AutoSchema',
+}
+
+SPECTACULAR_SETTINGS = {
+    'TITLE': 'Open edX LMS API',
+    'DESCRIPTION': 'APIs available in the Open edX LMS',
+    'VERSION': '1.0.0',
+    'SERVE_INCLUDE_SCHEMA': False,
+    # OTHER SETTINGS
+    'SCHEMA_PATH_PREFIX': '/api/'
 }
 
 # .. setting_name: REGISTRATION_VALIDATION_RATELIMIT
