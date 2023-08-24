@@ -1,3 +1,21 @@
+# Demo of a technique for adding private dependencies without allowing
+# them to override compiled public dependencies.
+#
+# To build:
+#
+#     pip-compile -o internal.txt internal.in
+#
+# To use:
+#
+#     pip-sync internal.txt requirements/edx/base.txt
+#
+# (internal.in and internal.txt would be created and managed by the
+# deployment process)
+
+# Ensures that internal dependencies don't conflict with the lockfile
+
+-c requirements/edx/base.txt
+
 # Specs for internal-only or private dependencies
 
 xblock-problem-builder==5.1.0
