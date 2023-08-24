@@ -1,0 +1,14 @@
+# Specs for internal-only or private dependencies
+
+xblock-problem-builder==5.1.0
+acclaimbadge-xblock==1.2.0
+openedx-xblock-image-modal==3.0.0
+xblock-free-text-response==2.1.1
+schoolyourself-xblock==0.2
+animation-xblock==0.2.0
+audio-xblock==0.2.0
+concept-xblock==0.2.0
+xblock-qualtrics-survey==1.2.2
+xblock-submit-and-compare==1.1.3
+invideoquiz-xblock==1.2.1
+xblock-sql-grader==0.3.1
