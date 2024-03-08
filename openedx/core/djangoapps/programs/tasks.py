@@ -18,8 +18,8 @@ from requests.exceptions import HTTPError
 from common.djangoapps.course_modes.models import CourseMode
 from lms.djangoapps.certificates.api import available_date_for_certificate
 from lms.djangoapps.certificates.models import GeneratedCertificate
-from openedx.core.djangoapps.content.course_overviews.models import CourseOverview
-from openedx.core.djangoapps.credentials.models import CredentialsApiConfig
+from openedx.core.djangoapps.content.course_overviews.api import get_course_overview_or_none
+from openedx.core.djangoapps.credentials.api import is_credentials_enabled
 from openedx.core.djangoapps.credentials.utils import (
     get_credentials,
     get_credentials_api_base_url,
@@ -32,10 +32,9 @@ from xmodule.data import CertificatesDisplayBehaviors
 User = get_user_model()
 
 LOGGER = get_task_logger(__name__)
-# Maximum number of retries before giving up on awarding credentials.
-# For reference, 11 retries with exponential backoff yields a maximum waiting
-# time of 2047 seconds (about 30 minutes). Setting this to None could yield
-# unwanted behavior: infinite retries.
+# Maximum number of retries before giving up on awarding credentials. For reference, 11 retries with exponential backoff
+# yields a maximum waiting time of 2047 seconds (about 30 minutes). Setting this to None could yield unwanted behavior:
+# infinite retries.
 MAX_RETRIES = 11
 
 PROGRAM_CERTIFICATE = "program"
@@ -45,7 +44,7 @@ DATE_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 
 def get_completed_programs(site, student):
     """
-    Given a set of completed courses, determine which programs are completed.
+    Determine which programs have been completed by a given user.
 
     Args:
         site (Site): Site for which data should be retrieved.
@@ -80,17 +79,16 @@ def get_inverted_programs(student):
 
 def get_certified_programs(student: User, raise_on_error: bool = False) -> List[str]:
     """
-    Find the UUIDs of all the programs for which the student has already been awarded
-    a certificate.
+    Find the UUIDs of all the programs for which the student has already been awarded a certificate.
 
     Args:
-        student: User object representing the student
+        student(User): User object representing the student
 
     Keyword Arguments:
         raise_on_error (bool): Reraise errors back to the caller, instead of returning empty results.
 
     Returns:
-        str[]: UUIDs of the programs for which the student has been awarded a certificate
+        list(str): UUIDs of the programs for which the student has been awarded a certificate
 
     """
     certified_programs = []
@@ -158,14 +156,14 @@ def award_program_certificates(self, username):  # lint-amnesty, pylint: disable
 
     Returns:
         None
-
     """
-
     def _retry_with_custom_exception(username, reason, countdown):
         exception = MaxRetriesExceededError(
             f"Failed to award program certificate for user {username}. Reason: {reason}"
         )
         return self.retry(exc=exception, countdown=countdown, max_retries=MAX_RETRIES)
+
+    countdown = 2**self.request.retries
 
     LOGGER.info(f"Running task award_program_certificates for username {username}")
     programs_without_certificates = configuration_helpers.get_value("programs_without_certificates", [])
@@ -174,13 +172,10 @@ def award_program_certificates(self, username):  # lint-amnesty, pylint: disable
             # this check will prevent unnecessary logging for partners without program certificates
             return
 
-    countdown = 2**self.request.retries
-    # If the credentials config model is disabled for this
-    # feature, it may indicate a condition where processing of such tasks
-    # has been temporarily disabled.  Since this is a recoverable situation,
-    # mark this task for retry instead of failing it altogether.
-
-    if not CredentialsApiConfig.current().is_learner_issuance_enabled:
+    # If the credentials config model is disabled for this feature, it may indicate a condition where processing of such
+    # tasks has been temporarily disabled.  Since this is a recoverable situation, mark this task for retry instead of
+    # failing it altogether.
+    if not is_credentials_enabled():
         error_msg = (
             "Task award_program_certificates cannot be executed when credentials issuance is disabled in API config"
         )
@@ -188,19 +183,18 @@ def award_program_certificates(self, username):  # lint-amnesty, pylint: disable
         raise _retry_with_custom_exception(username=username, reason=error_msg, countdown=countdown)
 
     try:
-        try:
-            student = User.objects.get(username=username)
-        except User.DoesNotExist:
-            LOGGER.exception(f"Task award_program_certificates was called with invalid username {username}")
-            # Don't retry for this case - just conclude the task.
-            return
+        student = User.objects.get(username=username)
+    except User.DoesNotExist:
+        LOGGER.exception(f"Task award_program_certificates was called with an invalid username {username}")
+        # Don't retry for this case - just conclude the task
+        return
+
+    try:
         completed_programs = {}
         for site in Site.objects.all():
             completed_programs.update(get_completed_programs(site, student))
         if not completed_programs:
-            # No reason to continue beyond this point unless/until this
-            # task gets updated to support revocation of program certs.
-            LOGGER.info(f"Task award_program_certificates was called for user {username} with no completed programs")
+            LOGGER.info(f"Task award_program_certificates was called for user {student} with no completed programs")
             return
 
         # Determine which program certificates the user has already been awarded, if any.
@@ -209,14 +203,12 @@ def award_program_certificates(self, username):  # lint-amnesty, pylint: disable
         # we will skip all the programs which have already been awarded and we want to skip the programs
         # which are exit in site configuration in 'programs_without_certificates' list.
         awarded_and_skipped_program_uuids = list(set(existing_program_uuids + list(programs_without_certificates)))
-
     except Exception as exc:
-        error_msg = f"Failed to determine program certificates to be awarded for user {username}. {exc}"
+        error_msg = f"Failed to determine program certificates to be awarded for user {student}. {exc}"
         LOGGER.exception(error_msg)
         raise _retry_with_custom_exception(username=username, reason=error_msg, countdown=countdown) from exc
 
-    # For each completed program for which the student doesn't already have a
-    # certificate, award one now.
+    # For each completed program for which the student doesn't already have a certificate, award one now.
     #
     # This logic is important, because we will retry the whole task if awarding any particular program cert fails.
     #
@@ -237,20 +229,20 @@ def award_program_certificates(self, username):  # lint-amnesty, pylint: disable
         for program_uuid in new_program_uuids:
             visible_date = completed_programs[program_uuid]
             try:
-                LOGGER.info(f"Visible date for user {username} : program {program_uuid} is {visible_date}")
+                LOGGER.info(f"Visible date for user {student} : program {program_uuid} is {visible_date}")
                 award_program_certificate(credentials_client, student, program_uuid, visible_date)
-                LOGGER.info(f"Awarded certificate for program {program_uuid} to user {username}")
+                LOGGER.info(f"Awarded a program certificate to user {student} in program {program_uuid}")
             except HTTPError as exc:
                 if exc.response.status_code == 404:
                     LOGGER.exception(
-                        f"Certificate for program {program_uuid} could not be found. "
-                        f"Unable to award certificate to user {username}. The program might not be configured."
+                        f"Unable to award a program certificate to user {student} in program {program_uuid}. A program "
+                        "certificate configuration for this program may not exist in Credentials"
                     )
                 elif exc.response.status_code == 429:
                     rate_limit_countdown = 60
                     error_msg = (
-                        f"Rate limited. "
-                        f"Retrying task to award certificates to user {username} in {rate_limit_countdown} seconds"
+                        f"Rate limited. Retrying task to award a program certificate to user {student} in program "
+                        f"{program_uuid} in {rate_limit_countdown} seconds"
                     )
                     LOGGER.info(error_msg)
                     # Retry after 60 seconds, when we should be in a new throttling window
@@ -261,29 +253,31 @@ def award_program_certificates(self, username):  # lint-amnesty, pylint: disable
                     ) from exc
                 else:
                     LOGGER.exception(
-                        f"Unable to award certificate to user {username} for program {program_uuid}. "
-                        "The program might not be configured."
+                        f"Unable to award a program certificate to user {student} in program {program_uuid}. A program "
+                        "certificate configuration for this program may not exist in Credentials"
                     )
             except Exception:  # pylint: disable=broad-except
                 # keep trying to award other certs, but retry the whole task to fix any missing entries
-                LOGGER.exception(f"Failed to award certificate for program {program_uuid} to user {username}.")
+                LOGGER.exception(
+                    f"Failed to award a program certificate to user {student} in program {program_uuid}"
+                )
                 failed_program_certificate_award_attempts.append(program_uuid)
 
         if failed_program_certificate_award_attempts:
             # N.B. This logic assumes that this task is idempotent
             LOGGER.info(f"Retrying task to award failed certificates to user {username}")
-            # The error message may change on each reattempt but will never be raised until
-            # the max number of retries have been exceeded. It is unlikely that this list
-            # will change by the time it reaches its maximimum number of attempts.
+            # The error message may change on each reattempt but will never be raised until the max number of retries
+            # have been exceeded. It is unlikely that this list will change by the time it reaches its maximimum number
+            # of attempts.
             error_msg = (
-                f"Failed to award certificate for user {username} "
-                f"for programs {failed_program_certificate_award_attempts}"
+                f"Failed to award a program certificate(s) for user {student} in program(s) "
+                f"{failed_program_certificate_award_attempts}"
             )
             raise _retry_with_custom_exception(username=username, reason=error_msg, countdown=countdown)
     else:
-        LOGGER.info(f"User {username} is not eligible for any new program certificates")
+        LOGGER.warning(f"User {student} is not eligible for any new program certificates")
 
-    LOGGER.info(f"Successfully completed the task award_program_certificates for username {username}")
+    LOGGER.info(f"Successfully completed the task award_program_certificates for user {student}")
 
 
 def post_course_certificate_configuration(client, cert_config, certificate_available_date=None):
@@ -355,10 +349,9 @@ def update_credentials_course_certificate_configuration_available_date(
     self, course_key, certificate_available_date=None
 ):
     """
-    This task will update the CourseCertificate configuration's available date
-    in Credentials. This is different from the "visible_date" attribute. This
-    date will always either be the available date that is set in Studio for a
-    given course, or it will be None.
+    This task will update the CourseCertificate configuration's available date in Credentials. This is different from
+    the "visible_date" attribute. This date will always either be the available date that is set in Studio for a given
+    course, or it will be None.
 
     Arguments:
         course_run_key (str): The course run key to award the certificate for
@@ -408,22 +401,20 @@ def award_course_certificate(self, username, course_run_key):
         username (str): The user to award the Credentials course cert to
         course_run_key (str): The course run key to award the certificate for
     """
-
     def _retry_with_custom_exception(username, course_run_key, reason, countdown):
         exception = MaxRetriesExceededError(
-            f"Failed to award course certificate for user {username} for course {course_run_key}. Reason: {reason}"
+            f"Failed to award a course certificate for user {username} for course {course_run_key}. Reason: {reason}"
         )
         return self.retry(exc=exception, countdown=countdown, max_retries=MAX_RETRIES)
 
-    LOGGER.info(f"Running task award_course_certificate for username {username}")
+    LOGGER.info(f"Running task award_course_certificate for username {username} and course run {course_run_key}")
 
     countdown = 2**self.request.retries
 
-    # If the credentials config model is disabled for this
-    # feature, it may indicate a condition where processing of such tasks
-    # has been temporarily disabled.  Since this is a recoverable situation,
-    # mark this task for retry instead of failing it altogether.
-    if not CredentialsApiConfig.current().is_learner_issuance_enabled:
+    # If the credentials config model is disabled for this feature, it may indicate a condition where processing of such
+    # tasks has been temporarily disabled.  Since this is a recoverable situation, mark this task for retry instead of
+    # failing it altogether.
+    if not is_credentials_enabled():
         error_msg = (
             "Task award_course_certificate cannot be executed when credentials issuance is disabled in API config"
         )
@@ -434,59 +425,58 @@ def award_course_certificate(self, username, course_run_key):
             reason=error_msg,
             countdown=countdown,
         )
+
+    try:
+        user = User.objects.get(username=username)
+    except User.DoesNotExist:
+        LOGGER.exception(f"Task award_course_certificate was called with an invalid username {username}")
+        return
+
     try:
         course_key = CourseKey.from_string(course_run_key)
-        try:
-            user = User.objects.get(username=username)
-        except User.DoesNotExist:
-            LOGGER.exception(f"Task award_course_certificate was called with invalid username {username}")
-            # Don't retry for this case - just conclude the task.
-            return
-        # Get the cert for the course key and username if it's both passing and available in professional/verified
-        try:
-            certificate = GeneratedCertificate.eligible_certificates.get(
-                user=user.id,
-                course_id=course_key,
+        # Attempt to retrieve the course overview for the given course run key, this is required to set the
+        # "visible date" of the course certificate being awarded on the Credentials side. If no course overview can
+        # be retrieved, just return. There is no point in retrying.
+        course_overview = get_course_overview_or_none(course_key)
+        if not course_overview:
+            LOGGER.warning(
+                f"Unable to award a course certificate to user {user} in course run {course_run_key}. A course "
+                "overview for the given course run key could not be found"
             )
+            return
+
+        # get the course certificate instance for the retrieved user and course run key if it's both passing and
+        # available in a supported mode
+        try:
+            certificate = GeneratedCertificate.eligible_certificates.get(user=user.id, course_id=course_key)
         except GeneratedCertificate.DoesNotExist:
             LOGGER.exception(
-                "Task award_course_certificate was called without Certificate found "
-                f"for {course_key} to user {username}"
+                f"Task award_course_certificate was called without a course certificate found for user {user} in "
+                f"course run {course_run_key}"
             )
             return
-        if certificate.mode in CourseMode.CERTIFICATE_RELEVANT_MODES:
-            try:
-                course_overview = CourseOverview.get_from_id(course_key)
-            except (CourseOverview.DoesNotExist, OSError):
-                LOGGER.exception(
-                    f"Task award_course_certificate was called without course overview data for course {course_key}"
-                )
-                return
 
-            credentials_client = get_credentials_api_client(
-                User.objects.get(username=settings.CREDENTIALS_SERVICE_USERNAME),
-            )
-
-            visible_date = available_date_for_certificate(
-                course_overview,
-                certificate,
-            )
-
+        if certificate and certificate.mode in CourseMode.CERTIFICATE_RELEVANT_MODES:
+            visible_date = available_date_for_certificate(course_overview, certificate)
             LOGGER.info(
-                "Task award_course_certificate will award certificate for course "
-                f"{course_key} with a visible date of {visible_date}"
+                f"Task award_course_certificate will award a course certificate to user {user} in course run "
+                f"{course_run_key} with a visible date of {visible_date}"
             )
 
-            # If the certificate has an associated CertificateDateOverride, send it along
+            # TODO: this should probably be refactored, we should have a utility function for retrieving a date override
+            # of a given user/certificate/course-run
             try:
                 date_override = certificate.date_override.date
                 LOGGER.info(
-                    "Task award_course_certificate will award certificate for course {course_key} with a date override "
-                    f"of {date_override}"
+                    f"Task award_course_certificate will award a course certificate to user {user} in course run"
+                    f"{course_run_key} with a date override of {date_override}"
                 )
             except ObjectDoesNotExist:
                 date_override = None
 
+            credentials_client = get_credentials_api_client(
+                User.objects.get(username=settings.CREDENTIALS_SERVICE_USERNAME),
+            )
             post_course_certificate(
                 credentials_client,
                 username,
@@ -495,10 +485,11 @@ def award_course_certificate(self, username, course_run_key):
                 date_override,
                 org=course_key.org,
             )
-
-            LOGGER.info(f"Awarded certificate for course {course_key} to user {username}")
+            LOGGER.info(f"Awarded a course certificate to user {user} in course run {course_run_key}")
     except Exception as exc:
-        error_msg = f"Failed to determine course certificates to be awarded for user {username}."
+        error_msg = (
+            f"Failed to determine course certificates to be awarded for user {user} in course run {course_run_key}"
+        )
         LOGGER.exception(error_msg)
         raise _retry_with_custom_exception(
             username=username,
@@ -566,15 +557,13 @@ def revoke_program_certificate(client, username, program_uuid):
 @set_code_owner_attribute
 def revoke_program_certificates(self, username, course_key):  # lint-amnesty, pylint: disable=too-many-statements
     """
-    This task is designed to be called whenever a student's course certificate is
-    revoked.
+    This task is designed to be called whenever a student's course certificate is revoked.
 
-    It will consult with a variety of APIs to determine whether or not the
-    specified user's certificate should be revoked in one or more programs, and
-    use the credentials service to revoke the said certificates if so.
+    It will consult with a variety of APIs to determine whether or not the specified user's certificate should be
+    revoked in one or more programs, and use the credentials service to revoke the said certificates if so.
 
-    If this function is moved, make sure to update it's entry in
-    EXPLICIT_QUEUES in the settings files so it runs in the correct queue.
+    If this function is moved, make sure to update it's entry in EXPLICIT_QUEUES in the settings files so it runs in the
+    correct queue.
 
     Args:
         username (str): The username of the student
@@ -584,7 +573,6 @@ def revoke_program_certificates(self, username, course_key):  # lint-amnesty, py
         None
 
     """
-
     def _retry_with_custom_exception(username, course_key, reason, countdown):
         exception = MaxRetriesExceededError(
             f"Failed to revoke program certificate for user {username} for course {course_key}. Reason: {reason}"
@@ -592,12 +580,11 @@ def revoke_program_certificates(self, username, course_key):  # lint-amnesty, py
         return self.retry(exc=exception, countdown=countdown, max_retries=MAX_RETRIES)
 
     countdown = 2**self.request.retries
-    # If the credentials config model is disabled for this
-    # feature, it may indicate a condition where processing of such tasks
-    # has been temporarily disabled.  Since this is a recoverable situation,
-    # mark this task for retry instead of failing it altogether.
 
-    if not CredentialsApiConfig.current().is_learner_issuance_enabled:
+    # If the credentials config model is disabled for this feature, it may indicate a condition where processing of such
+    # tasks has been temporarily disabled.  Since this is a recoverable situation, mark this task for retry instead of
+    # failing it altogether.
+    if not is_credentials_enabled():
         error_msg = (
             "Task revoke_program_certificates cannot be executed when credentials issuance is disabled in API config"
         )
@@ -612,29 +599,24 @@ def revoke_program_certificates(self, username, course_key):  # lint-amnesty, py
     try:
         student = User.objects.get(username=username)
     except User.DoesNotExist:
-        LOGGER.exception(
-            f"Task revoke_program_certificates was called with invalid username {username}",
-            username,
-        )
-        # Don't retry for this case - just conclude the task.
+        LOGGER.exception(f"Task revoke_program_certificates was called with invalid username {username}")
         return
 
     try:
         inverted_programs = get_inverted_programs(student)
         course_specific_programs = inverted_programs.get(course_key)
         if not course_specific_programs:
-            # No reason to continue beyond this point
             LOGGER.info(
-                f"Task revoke_program_certificates was called for user {username} "
-                f"and course {course_key} with no engaged programs"
+                f"Task revoke_program_certificates was called for user {student} and course run {course_key} with no "
+                "engaged programs"
             )
             return
 
-        # Determine which program certificates the user has already been awarded, if any.
+        # determine if this user has any program certificates that need to be revoked
         program_uuids_to_revoke = get_revokable_program_uuids(course_specific_programs, student)
     except Exception as exc:
         error_msg = (
-            f"Failed to determine program certificates to be revoked for user {username} " f"with course {course_key}"
+            f"Failed to determine program certificates to be revoked for user {student}"
         )
         LOGGER.exception(error_msg)
         raise _retry_with_custom_exception(
@@ -659,18 +641,18 @@ def revoke_program_certificates(self, username, course_key):  # lint-amnesty, py
         for program_uuid in program_uuids_to_revoke:
             try:
                 revoke_program_certificate(credentials_client, username, program_uuid)
-                LOGGER.info(f"Revoked certificate for program {program_uuid} for user {username}")
+                LOGGER.info(f"Revoked program certificate from user {student} in program {program_uuid}")
             except HTTPError as exc:
                 if exc.response.status_code == 404:
                     LOGGER.exception(
-                        f"Certificate for program {program_uuid} could not be found. "
-                        f"Unable to revoke certificate for user {username}"
+                        f"Unable to revoke program certificate from user {student} in program {program_uuid}. A "
+                        "program certificate could not be found for the given user in this program"
                     )
                 elif exc.response.status_code == 429:
                     rate_limit_countdown = 60
                     error_msg = (
-                        "Rate limited. Retrying task to revoke certificates "
-                        f"for user {username} in {rate_limit_countdown} seconds"
+                        f"Rate limited. Retrying task to revoke a program certificate from user {student} in program "
+                        f"{program_uuid} in {rate_limit_countdown} seconds"
                     )
                     LOGGER.info(error_msg)
                     # Retry after 60 seconds, when we should be in a new throttling window
@@ -681,26 +663,27 @@ def revoke_program_certificates(self, username, course_key):  # lint-amnesty, py
                         countdown=rate_limit_countdown,
                     ) from exc
                 else:
-                    LOGGER.exception(f"Unable to revoke certificate for user {username} for program {program_uuid}.")
+                    LOGGER.exception(
+                        f"Failed to revoke program certificate from user {student} in program {program_uuid}"
+                    )
             except Exception:  # pylint: disable=broad-except
                 # keep trying to revoke other certs, but retry the whole task to fix any missing entries
-                LOGGER.warning(f"Failed to revoke certificate for program {program_uuid} of user {username}.")
+                LOGGER.warning(f"Failed to revoke program from user {student} in program {program_uuid}")
                 failed_program_certificate_revoke_attempts.append(program_uuid)
 
         if failed_program_certificate_revoke_attempts:
             # N.B. This logic assumes that this task is idempotent
-            LOGGER.info(f"Retrying task to revoke failed certificates to user {username}")
-            # The error message may change on each reattempt but will never be raised until
-            # the max number of retries have been exceeded. It is unlikely that this list
-            # will change by the time it reaches its maximimum number of attempts.
+            LOGGER.info(f"Retrying task to revoke a program certificate from user {student} in program {program_uuid}")
+            # The error message may change on each reattempt but will never be raised until the max number of retries
+            # have been exceeded. It is unlikely that this list will change by the time it reaches its maximimum number
+            # of attempts.
             error_msg = (
-                f"Failed to revoke certificate for user {username} "
-                f"for programs {failed_program_certificate_revoke_attempts}"
+                f"Failed to revoke program certificate(s) for user {student} in program(s) "
+                f"{failed_program_certificate_revoke_attempts}"
             )
             raise _retry_with_custom_exception(username, course_key, reason=error_msg, countdown=countdown)
-
     else:
-        LOGGER.info(f"There is no program certificates for user {username} to revoke")
+        LOGGER.info(f"There are no program certificates to revoke for user {username}")
     LOGGER.info(f"Successfully completed the task revoke_program_certificates for username {username}")
 
 
@@ -725,7 +708,7 @@ def update_certificate_visible_date_on_course_update(self, course_key):
     # If the CredentialsApiConfig configuration model is disabled for this feature, it may indicate a condition where
     # processing of such tasks has been temporarily disabled. Since this is a recoverable situation, mark this task for
     # retry instead of failing it.
-    if not CredentialsApiConfig.current().is_learner_issuance_enabled:
+    if not is_credentials_enabled():
         error_msg = (
             "Cannot execute the `update_certificate_visible_date_on_course_update` task. Issuing user credentials "
             "through the Credentials IDA is disabled."
@@ -755,22 +738,21 @@ def update_certificate_visible_date_on_course_update(self, course_key):
 @set_code_owner_attribute
 def update_certificate_available_date_on_course_update(self, course_key):
     """
-    This task is designed to be called whenever a course-run's `certificate_available_date` is updated.
+    This task is designed to be enqueued whenever a course run's Certificate Display Behavior (CDB) or Certificate
+    Available Date (CAD) has been updated in the CMS.
 
-    When executed, this task will determine if we need to enqueue an
-    `update_credentials_course_certificate_configuration_available_date` task associated with the specified course-run
-    key from this task. If so, this subtask is responsible for making a REST API call to the Credentials IDA to update
-    the specified course-run's Course Certificate configuration with the new `certificate_available_date` value.
+    When executed, this task is responsible for enqueuing additional subtasks responsible for updating the CAD value in
+    the Credentials IDA's internal records.
 
     Args:
-        course_key(str): The course identifier
+        course_key(str): The course run's identifier
     """
     countdown = 2**self.request.retries
 
     # If the CredentialsApiConfig configuration model is disabled for this feature, it may indicate a condition where
     # processing of such tasks has been temporarily disabled. Since this is a recoverable situation, mark this task for
     # retry instead of failing it.
-    if not CredentialsApiConfig.current().is_learner_issuance_enabled:
+    if not is_credentials_enabled():
         error_msg = (
             "Cannot execute the `update_certificate_visible_date_on_course_update` task. Issuing user credentials "
             "through the Credentials IDA is disabled."
@@ -782,39 +764,54 @@ def update_certificate_available_date_on_course_update(self, course_key):
         )
         raise self.retry(exc=exception, countdown=countdown, max_retries=MAX_RETRIES)
 
+    # When updating the certificate available date of instructor-paced course runs,
+    #   - If the display behavior is set to "A date after the course end date" (END_WITH_DATE), we should send the
+    #     certificate available date set by the course team in Studio (and stored as part of the course runs Course
+    #     Overview)
+    #   - If the display behavior is set to "End date of course" (END), we should send the end date of the course run
+    #     as the certificate available date. We send the end date because the Credentials IDA doesn't understand the
+    #     concept of course pacing and needs an explicit date in order to correctly gate the visibility of course and
+    #     program certificates.
+    #   - If the display behavior is set to "Immediately upon passing" (EARLY_NO_INFO), we should always send None for
+    #     the course runs certificate available date. A course run configured with this display behavior must not have a
+    #     certificate available date associated with or the Credentials system will incorrectly hide certificates from
+    #     learners.
+    course_overview = get_course_overview_or_none(course_key)
     course_overview = CourseOverview.get_from_id(course_key)
-    # Update the Credentials service's CourseCertificate configuration with the new `certificate_available_date` if:
-    #   - The course-run is instructor-paced, AND
-    #   - The `certificates_display_behavior` is set to "end_with_date",
-    if (
-        course_overview
-        and course_overview.self_paced is False
-        and course_overview.certificates_display_behavior == CertificatesDisplayBehaviors.END_WITH_DATE
-    ):
-        LOGGER.info(
-            f"Queueing task to update the `certificate_available_date` of course-run {course_key} to "
-            f"[{course_overview.certificate_available_date}] in the Credentials service"
-        )
-        update_credentials_course_certificate_configuration_available_date.delay(
-            str(course_key), str(course_overview.certificate_available_date)
-        )
-    # OR,
-    #   - The course-run is self-paced, AND
-    #   - The `certificate_available_date` is (now) None. (This task will be executed after an update to the course
-    #     overview)
-    # There are times when the CourseCertificate configuration of a self-paced course-run in Credentials can become
-    # associated with a `certificate_available_date`. This ends up causing learners' certificate to be incorrectly
-    # hidden. This is due to the Credentials IDA not understanding the concept of course pacing. Thus, we need a way
-    # to remove this value from self-paced courses in Credentials.
-    elif course_overview and course_overview.self_paced is True and course_overview.certificate_available_date is None:
-        LOGGER.info(
-            "Queueing task to remove the `certificate_available_date` in the Credentials service for course-run "
-            f"{course_key}"
-        )
+    if (course_overview and course_overview.self_paced is False):
+        if course_overview.certificates_display_behavior == CertificatesDisplayBehaviors.END_WITH_DATE:
+            update_credentials_course_certificate_configuration_available_date.delay(
+                str(course_key),
+                str(course_overview.certificate_available_date)
+            )
+        elif course_overview.certificates_display_behavior == CertificatesDisplayBehaviors.END:
+            import pdb; pdb.set_trace()
+            update_credentials_course_certificate_configuration_available_date.delay(
+                str(course_key),
+                str(course_overview.end)  # `end_date` is deprecated, use `end` instead
+            )
+        elif course_overview.certificates_display_behavior == CertificatesDisplayBehaviors.EARLY_NO_INFO:
+            update_credentials_course_certificate_configuration_available_date.delay(
+                str(course_key),
+                None
+            )
+        # this is an invalid update so let's log something and maybe we can understand our problems a bit better
+        else:
+            LOGGER.warning(
+                f"Skipping update to the course certificate configuration in Credentials of course run [{course_key}]. "
+                f"An invalid instructor-paced course run configuration was detected with a display behavior of "
+                f"[{course_overview.certificates_display_behavior}], a certificate available date of "
+                f"[{course_overview.certificate_available_date}], and a course end date of [{course_overview.end_date}]"
+            )
+    # Having a certificate available date associated with a self-paced course run is not allowed. Course runs with this
+    # type of pacing should always award a certificate to learners immediately upon passing. If the system detects that
+    # an update must be sent to Credentials, we *always* send a certificate available date of `None`. We are aware of a
+    # defect that sometimes allows a certificate available date to be saved for a self-paced course run. This is an
+    # attempt to prevent bad data from being synced to the Credentials service too.
+    elif (course_overview and course_overview.self_paced is True):
         update_credentials_course_certificate_configuration_available_date.delay(str(course_key), None)
-    # ELSE, we don't meet the criteria to update the course cert config in the Credentials IDA
     else:
         LOGGER.warning(
-            f"Skipping update of the `certificate_available_date` for course {course_key} in the Credentials service. "
-            "This course-run does not meet the required criteria for an update."
+            f"Unable to update the certificate available date in course run [{course_key}]. A course overview for this "
+            "course run could not be found"
         )

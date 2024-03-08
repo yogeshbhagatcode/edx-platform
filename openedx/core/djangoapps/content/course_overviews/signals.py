@@ -11,6 +11,7 @@ from django.dispatch import Signal
 from django.dispatch.dispatcher import receiver
 
 from openedx.core.djangoapps.signals.signals import COURSE_CERT_DATE_CHANGE
+from xmodule.data import CertificatesDisplayBehaviors
 from xmodule.modulestore.django import SignalHandler  # lint-amnesty, pylint: disable=wrong-import-order
 
 from .models import CourseOverview
@@ -112,18 +113,50 @@ def _check_for_pacing_changes(previous_course_overview, updated_course_overview)
 
 
 def _check_for_cert_availability_date_changes(previous_course_overview, updated_course_overview):
-    """ Checks if the cert available date has changed and if so, sends a COURSE_CERT_DATE_CHANGE signal"""
-    if previous_course_overview.certificate_available_date != updated_course_overview.certificate_available_date:
+    """
+    Checks if the cert available date or the display behavior has changed in this course run. If so, emit a
+    COURSE_CERT_DATE_CHANGE signal to ensure other parts of the system are aware of the change.
+    """
+    def _send_course_cert_date_change_signal():
+        """
+        A callback used to fire the COURSE_CERT_DATE_CHANGE Django signal *after* the ORM has successfully commit the
+        update.
+        """
+        COURSE_CERT_DATE_CHANGE.send_robust(sender=None, course_key=str(updated_course_overview.id))
+
+    course_run_id = str(updated_course_overview.id)
+    prev_available_date = previous_course_overview.certificate_available_date
+    prev_display_behavior = previous_course_overview.certificates_display_behavior
+    prev_end_date = previous_course_overview.end  # `end_date` is a deprecated field, use `end` instead
+    updated_available_date = updated_course_overview.certificate_available_date
+    updated_display_behavior = updated_course_overview.certificates_display_behavior
+    updated_end_date = updated_course_overview.end  # `end_date` is a deprecated field, use `end` instead
+
+    send_signal = False
+    if prev_available_date != updated_available_date:
         LOG.info(
-            f"Certificate availability date for {str(updated_course_overview.id)} has changed from " +
-            f"{previous_course_overview.certificate_available_date} to " +
-            f"{updated_course_overview.certificate_available_date}. Sending COURSE_CERT_DATE_CHANGE signal."
+            f"The certificate available date for {course_run_id} has changed from {prev_available_date} to "
+            f"{updated_available_date}. Firing COURSE_CERT_DATE_CHANGE signal."
         )
+        send_signal = True
+    elif prev_display_behavior != updated_display_behavior:
+        LOG.info(
+            f"The certificates display behavior for {course_run_id} has changed from {prev_display_behavior} to "
+            f"{updated_display_behavior}. Firing COURSE_CERT_DATE_CHANGE signal."
+        )
+        send_signal = True
+    # edge case -- if a course run with a cert display behavior of "End date of course" has changed its end date, we
+    # should fire our signal to ensure visibility of certificates managed by the Credentials IDA are corrected too
+    elif (
+        (prev_display_behavior == CertificatesDisplayBehaviors.END and
+         updated_display_behavior == CertificatesDisplayBehaviors.END) and
+        (prev_end_date != updated_end_date)
+    ):
+        LOG.info(
+            f"The end date for {course_run_id} has changed from {prev_end_date} to {updated_end_date}. Firing "
+            "COURSE_CERT_DATE_CHANGE signal."
+        )
+        send_signal = True
 
-        def _send_course_cert_date_change_signal():
-            COURSE_CERT_DATE_CHANGE.send_robust(
-                sender=None,
-                course_key=updated_course_overview.id,
-            )
-
+    if send_signal:
         transaction.on_commit(_send_course_cert_date_change_signal)
