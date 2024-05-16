@@ -3,6 +3,7 @@ MongoDB/GridFS-level code for the contentstore.
 """
 
 
+import hashlib
 import json
 import os
 
@@ -152,12 +153,17 @@ class MongoContentStore(ContentStore):
                         'thumbnail',
                         thumbnail_location[4]
                     )
+
+                md5 = getattr(fp, 'md5', None)
+                if md5 is None:
+                    md5 = hashlib.md5().hexdigest()
+
                 return StaticContentStream(
                     location, fp.displayname, fp.content_type, fp, last_modified_at=fp.uploadDate,
                     thumbnail_location=thumbnail_location,
                     import_path=getattr(fp, 'import_path', None),
                     length=fp.length, locked=getattr(fp, 'locked', False),
-                    content_digest=getattr(fp, 'md5', None),
+                    content_digest=md5,
                 )
             else:
                 with self.fs.get(content_id) as fp:
@@ -171,12 +177,17 @@ class MongoContentStore(ContentStore):
                             'thumbnail',
                             thumbnail_location[4]
                         )
+
+                    md5 = getattr(fp, 'md5', None)
+                    if md5 is None:
+                        md5 = hashlib.md5().hexdigest()
+
                     return StaticContent(
                         location, fp.displayname, fp.content_type, fp.read(), last_modified_at=fp.uploadDate,
                         thumbnail_location=thumbnail_location,
                         import_path=getattr(fp, 'import_path', None),
                         length=fp.length, locked=getattr(fp, 'locked', False),
-                        content_digest=getattr(fp, 'md5', None),
+                        content_digest=md5,
                     )
         except NoFile:
             if throw_on_not_found:  # lint-amnesty, pylint: disable=no-else-raise
