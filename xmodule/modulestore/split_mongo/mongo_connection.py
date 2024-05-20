@@ -285,6 +285,7 @@ class MongoPersistenceBackend:
             retry_wait_time=retry_wait_time, **kwargs
         )
 
+        # import pdb; pdb.set_trace() # pdb10
         self.course_index = self.database[collection + '.active_versions']
         self.structures = self.database[collection + '.structures']
         self.definitions = self.database[collection + '.definitions']

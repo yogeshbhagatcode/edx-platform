@@ -489,6 +489,7 @@ class MongoModuleStore(ModuleStoreDraftAndPublished, ModuleStoreWriteBase, Mongo
                 retry_wait_time=retry_wait_time, **kwargs
             )
 
+            # import pdb; pdb.set_trace() # pdb14
             self.collection = self.database[collection]
 
             # Collection which stores asset metadata.
@@ -855,6 +856,7 @@ class MongoModuleStore(ModuleStoreDraftAndPublished, ModuleStoreWriteBase, Mongo
         If ignore_case is True, do a case insensitive search,
         otherwise, do a case sensitive search
         """
+        # import pdb; pdb.set_trace() # pdb3 🔥
         assert isinstance(course_key, CourseKey)
 
         if not course_key.deprecated:  # split course_key

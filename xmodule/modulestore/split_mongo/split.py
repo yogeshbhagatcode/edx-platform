@@ -654,6 +654,7 @@ class SplitMongoModuleStore(SplitBulkWriteMixin, ModuleStoreWriteBase):
 
         self.db_connection = DjangoFlexPersistenceBackend(**doc_store_config)
 
+        # import pdb; pdb.set_trace() # pdb11
         if default_class is not None:
             module_path, __, class_name = default_class.rpartition('.')
             try:
@@ -1123,6 +1124,7 @@ class SplitMongoModuleStore(SplitBulkWriteMixin, ModuleStoreWriteBase):
         Note: we return the course_id instead of a boolean here since the found course may have
            a different id than the given course_id when ignore_case is True.
         """
+        # import pdb; pdb.set_trace() # pdb6
         if not isinstance(course_id, CourseLocator) or course_id.deprecated:
             # The supplied CourseKey is of the wrong type, so it can't possibly be stored in this modulestore.
             return False

@@ -51,14 +51,22 @@ def connect_to_mongodb(
         if read_preference is not None:
             kwargs['read_preference'] = read_preference
 
+    connection_params = {
+        'host': host,
+        'port': port,
+        'tz_aware': tz_aware,
+        'document_class': dict,
+        'authSource': db,
+        'directConnection': True,
+        **kwargs,
+    }
+
+    if user is not None and password is not None:
+        connection_params.update({'user': user, 'password': password})
+
+    # import pdb; pdb.set_trace() # pdb9
     mongo_conn = pymongo.database.Database(
-        pymongo.MongoClient(
-            host=host,
-            port=port,
-            tz_aware=tz_aware,
-            document_class=dict,
-            **kwargs
-        ),
+        pymongo.MongoClient(connection_params),
         db
     )
 
@@ -67,9 +75,6 @@ def connect_to_mongodb(
             mongo_conn,
             wait_time=retry_wait_time
         )
-    # If credentials were provided, authenticate the user.
-    if user is not None and password is not None:
-        mongo_conn.authenticate(user, password, source=auth_source)
 
     return mongo_conn
 
