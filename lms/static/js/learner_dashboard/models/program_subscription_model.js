@@ -1,7 +1,6 @@
 import Backbone from 'backbone';
 import moment from 'moment';
 
-import DateUtils from 'edx-ui-toolkit/js/utils/date-utils';
 import StringUtils from 'edx-ui-toolkit/js/utils/string-utils';
 
 
@@ -19,10 +18,6 @@ class ProgramSubscriptionModel extends Backbone.Model {
         } = context;
 
         const priceInUSD = subscription_prices?.find(({ currency }) => currency === 'USD');
-        const trialMoment = DateUtils.localizeTime(
-            DateUtils.stringToMoment(data.trial_end),
-            'UTC'
-        );
 
         const subscriptionState = data.subscription_state?.toLowerCase() ?? '';
         const subscriptionPrice = StringUtils.interpolate(
@@ -38,10 +33,7 @@ class ProgramSubscriptionModel extends Backbone.Model {
                 ? urls.manage_subscription_url
                 : urls.buy_subscription_url;
 
-        const hasActiveTrial =
-            subscriptionState === 'active' && data.trial_end
-                ? trialMoment.isAfter(moment.utc())
-                : false;
+        const hasActiveTrial = false;
 
         const remainingDays = ProgramSubscriptionModel.getRemainingDays(
             data.trial_end,
