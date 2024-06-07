@@ -1,6 +1,7 @@
 import Backbone from 'backbone';
 import moment from 'moment';
 
+import DateUtils from 'edx-ui-toolkit/js/utils/date-utils';
 import StringUtils from 'edx-ui-toolkit/js/utils/string-utils';
 
 
