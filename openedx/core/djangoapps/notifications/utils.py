@@ -3,12 +3,9 @@ Utils function for notifications app
 """
 from typing import Dict, List
 
-from common.djangoapps.student.models import CourseEnrollment, CourseAccessRole
-from lms.djangoapps.discussion.toggles import ENABLE_REPORTED_CONTENT_NOTIFICATIONS
+from common.djangoapps.student.models import CourseAccessRole, CourseEnrollment
 from openedx.core.djangoapps.django_comment_common.models import Role
 from openedx.core.lib.cache_utils import request_cached
-
-from .config.waffle import ENABLE_COURSEWIDE_NOTIFICATIONS, SHOW_NOTIFICATIONS_TRAY
 
 
 def find_app_in_normalized_apps(app_name, apps_list):
@@ -35,18 +32,7 @@ def get_show_notifications_tray(user):
     """
     Returns show_notifications_tray as boolean for the courses in which user is enrolled
     """
-    show_notifications_tray = False
-    learner_enrollments_course_ids = CourseEnrollment.objects.filter(
-        user=user,
-        is_active=True
-    ).values_list('course_id', flat=True)
-
-    for course_id in learner_enrollments_course_ids:
-        if SHOW_NOTIFICATIONS_TRAY.is_enabled(course_id):
-            show_notifications_tray = True
-            break
-
-    return show_notifications_tray
+    return True
 
 
 def get_list_in_batches(input_list, batch_size):
@@ -63,19 +49,6 @@ def filter_course_wide_preferences(course_key, preferences):
     If course wide notifications is disabled for course, it filters course_wide
     preferences from response
     """
-    if ENABLE_COURSEWIDE_NOTIFICATIONS.is_enabled(course_key):
-        return preferences
-    course_wide_notification_types = ['new_discussion_post', 'new_question_post']
-
-    if not ENABLE_REPORTED_CONTENT_NOTIFICATIONS.is_enabled(course_key):
-        course_wide_notification_types.append('content_reported')
-
-    config = preferences['notification_preference_config']
-    for app_prefs in config.values():
-        notification_types = app_prefs['notification_types']
-        for course_wide_type in course_wide_notification_types:
-            if course_wide_type in notification_types.keys():
-                notification_types.pop(course_wide_type)
     return preferences
 
 
